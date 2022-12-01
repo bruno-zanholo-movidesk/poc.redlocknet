@@ -6,9 +6,9 @@ using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
+using System.Runtime.Remoting.Messaging;
 using System.Threading;
 using System.Threading.Tasks;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace poc.redlocknet
 {
@@ -21,6 +21,96 @@ namespace poc.redlocknet
             var random = new Random();
             var appSettings = ConfigurationManager.AppSettings;
 
+            var max = random.Next(Convert.ToInt32(appSettings["MinParallelTasks"]), Convert.ToInt32(appSettings["MaxParallelTasks"]));
+
+            WriteLine($"Generating list of inputs with {max} distinct itens");
+
+            var inputs = new List<KeyValuePair<int, bool>>();
+
+            for (int i = 1; i < max + 1; i++)
+            {
+                inputs.Add(new KeyValuePair<int, bool>(i, false));
+                inputs.Add(new KeyValuePair<int, bool>(i, true));
+
+                if (i % 2 == 0)
+                    inputs.Add(new KeyValuePair<int, bool>(i, true));
+
+                if (i % 5 == 0)
+                {
+                    inputs.Add(new KeyValuePair<int, bool>(i, true));
+                    inputs.Add(new KeyValuePair<int, bool>(i, true));
+                }
+            }
+
+            WriteLine($"Using with {inputs.Count} itens");
+
+            var acquired = 0;
+            var notAcquired = 0;
+
+            var maxDegreeOfParallelism = Convert.ToInt32(appSettings["MaxDegreeOfParallelism"]);
+            var minSecondsToWait = Convert.ToInt16(appSettings["MinSecondsToWait"]);
+            var maxSecondsToWait = Convert.ToInt16(appSettings["MaxSecondsToWait"]);
+
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
+
+            using (var poc = new Poc())
+            {
+                Parallel.ForEach(inputs, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = maxDegreeOfParallelism
+                },
+                (input) =>
+                {
+                    var lockKey = GenerateLockKey(input.Key.ToString());
+
+                    IRedLock redLock = null;
+
+                    try
+                    {
+                        using (redLock = poc.Lock(lockKey))
+                        {
+                            if (redLock.IsAcquired)
+                            {                                
+                                Sleep(lockKey, random.Next(minSecondsToWait, maxSecondsToWait), print: false, clear: false);
+
+                                Interlocked.Increment(ref acquired);
+                            }
+                            else
+                            {
+                                WriteLine($"Lock can't be acquired for {lockKey}-{input.Value}");
+                                Interlocked.Increment(ref notAcquired);
+                            }
+                        }
+                        //WriteLine($"Process unlocked by resource {lockKey}");
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteLine("Error: " + ex.Message);
+                        poc.Release(redLock);
+                    }
+                });
+            }
+
+            sw.Stop();
+
+            WriteLine($"Acquired: {acquired}");
+            WriteLine($"Not acquired: {notAcquired}");
+            WriteLine($"Time elapsed: {sw.Elapsed.Hours.ToString().PadLeft(2, '0')}:{sw.Elapsed.Minutes.ToString().PadLeft(2, '0')}:{sw.Elapsed.Seconds.ToString().PadLeft(2, '0')}.{sw.Elapsed.Milliseconds}");
+            WriteLine($"Average: {inputs.Count / (sw.Elapsed.Seconds * 1M)} requests/seconds");
+
+            Console.ReadKey();
+            WriteLine("Bye...");
+        }
+
+        static void Main2(string[] args)
+        {
+            var random = new Random();
+            var appSettings = ConfigurationManager.AppSettings;
+
+            var minSecondsToWait = Convert.ToInt16(appSettings["MinSecondsToWait"]);
+            var maxSecondsToWait = Convert.ToInt16(appSettings["MaxSecondsToWait"]);
+
             using (var poc = new Poc())
             {
                 var input = GetInput();
@@ -32,16 +122,12 @@ namespace poc.redlocknet
                     try
                     {
                         if (!string.IsNullOrEmpty(input))
-                        {                            
+                        {
                             redLock = poc.Lock(GenerateLockKey(input));
 
                             if (redLock.IsAcquired)
-                            {
-                                var seconds = random.Next(
-                                    Convert.ToInt16(appSettings["MinSecondsToWait"]),
-                                    Convert.ToInt16(appSettings["MaxSecondsToWait"]));
-
-                                Sleep(redLock?.Resource, seconds);
+                            {                                
+                                Sleep(redLock?.Resource, random.Next(minSecondsToWait, maxSecondsToWait));
 
                                 if (input == "1" || input == "11")
                                     throw new Exception("Exception generate by input \"1\"");
@@ -50,7 +136,7 @@ namespace poc.redlocknet
                             }
                             else
                             {
-                                Console.WriteLine($"Lock can't be acquired");
+                                WriteLine($"Lock can't be acquired for {redLock.Resource}");
                                 Console.ReadKey();
                             }
                         }
@@ -59,7 +145,7 @@ namespace poc.redlocknet
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("Error: " + ex.Message);
+                        WriteLine("Error: " + ex.Message);
                         Console.ReadKey();
 
                         if (redLock != null && input == "11")
@@ -70,13 +156,13 @@ namespace poc.redlocknet
                 }
             }
 
-            Console.WriteLine("Bye...");
+            WriteLine("Bye...");
         }
 
         private static string GetInput()
         {
             Console.Clear();
-            Console.WriteLine("Write \"Message-id\" or \"E\" to exit");
+            WriteLine("Write \"Message-id\" or \"E\" to exit");
 
             var input = Console.ReadLine().Trim();
 
@@ -85,18 +171,28 @@ namespace poc.redlocknet
             return input;
         }
 
-        private static void Sleep(string resource, int seconds)
-        {
-            var x = seconds;
+        private static void Sleep(string resource, int seconds, bool print = true, bool clear = true)
+        {         
+            if (print)
+            {                
+                WriteLine($"Process locked by resource {resource}");
 
-            while (x > 0)
-            {
-                Console.Clear();
-                Console.WriteLine($"Process locked by resource {resource}");
-                Console.WriteLine($"Waiting {x--} seconds in processing...");
-                Thread.Sleep(1000);
+                while (seconds > 0)
+                {
+                    if (clear) Console.Clear();
+                    if (print)
+                    {
+                        WriteLine($"processing resource {resource} - waiting {seconds} seconds...");
+                    }
+                    seconds--;
+                    Thread.Sleep(1000);
+                }
             }
+            else
+                Thread.Sleep(seconds * 1000);
         }
+
+        private static void WriteLine(string message) => Console.WriteLine($"[Poc.{Process.GetCurrentProcess().Id}] {message}");
     }
 
     internal class Poc : IDisposable
@@ -147,35 +243,29 @@ namespace poc.redlocknet
             }
         }
 
-        public IRedLock Lock(string resource, CancellationToken? cancellationToken = null)
+        public IRedLock Lock(string resource, CancellationToken cancellationToken = default)
         {
             var settings = Seetings();
-            Console.WriteLine($"Creating lock {resource}");
-            var redlock = RedLockFactory.CreateLock(resource, settings.ExpiryTime, settings.WaitTime, settings.RetryTime, cancellationToken ?? CancellationToken.None);
-            Console.WriteLine($"Lock created {resource}");
+            var redlock = RedLockFactory.CreateLock(resource, settings.ExpiryTime, settings.WaitTime, settings.RetryTime, cancellationToken);
             return redlock;
         }
 
-        public async Task<IRedLock> LockAsync(string resource, CancellationToken? cancellationToken = null)
+        public async Task<IRedLock> LockAsync(string resource, CancellationToken cancellationToken = default)
         {
             var settings = Seetings();
-            Console.WriteLine("Creating lock");
-            var redlock = await RedLockFactory.CreateLockAsync(resource, settings.ExpiryTime, settings.WaitTime, settings.RetryTime, cancellationToken ?? CancellationToken.None);
-            Console.WriteLine("Lock created");
+            var redlock = await RedLockFactory.CreateLockAsync(resource, settings.ExpiryTime, settings.WaitTime, settings.RetryTime, cancellationToken);
             return redlock;
         }
 
         public void Release(IRedLock redLock)
         {
-            Console.WriteLine($"Releasing lock {redLock.Resource}");
-            redLock.Dispose();
-            Console.WriteLine($"Lock released {redLock.Resource}");
+            redLock?.Dispose();
         }
 
         private static (TimeSpan ExpiryTime, TimeSpan WaitTime, TimeSpan RetryTime) Seetings()
         {
             var appSettings = ConfigurationManager.AppSettings;
-            return (TimeSpan.FromSeconds(Convert.ToInt32(appSettings["ExpiryTime"])), TimeSpan.FromSeconds(Convert.ToInt32(appSettings["WaitTime"])), TimeSpan.FromSeconds(Convert.ToInt32(appSettings["RetryTime"])));
+            return (TimeSpan.FromMilliseconds(Convert.ToInt32(appSettings["ExpiryTime"])), TimeSpan.FromMilliseconds(Convert.ToInt32(appSettings["WaitTime"])), TimeSpan.FromMilliseconds(Convert.ToInt32(appSettings["RetryTime"])));
         }
 
         public void Dispose()
