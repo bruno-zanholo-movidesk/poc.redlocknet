@@ -165,9 +165,7 @@ namespace poc.redlocknet
             WriteLine("Write \"Message-id\" or \"E\" to exit");
 
             var input = Console.ReadLine().Trim();
-
-            Console.Clear();
-
+            
             return input;
         }
 
