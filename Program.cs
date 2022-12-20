@@ -16,7 +16,7 @@ namespace poc.redlocknet
     {
         static string GenerateLockKey(string input) => $"lock-key-{input}";
 
-        static void Main(string[] args)
+        static void Main2(string[] args)
         {
             var random = new Random();
             var appSettings = ConfigurationManager.AppSettings;
@@ -103,7 +103,7 @@ namespace poc.redlocknet
             WriteLine("Bye...");
         }
 
-        static void Main2(string[] args)
+        static void Main(string[] args)
         {
             var random = new Random();
             var appSettings = ConfigurationManager.AppSettings;
@@ -253,7 +253,8 @@ namespace poc.redlocknet
         public async Task<IRedLock> LockAsync(string resource, CancellationToken cancellationToken = default)
         {
             var settings = Seetings();
-            var redlock = await RedLockFactory.CreateLockAsync(resource, settings.ExpiryTime, settings.WaitTime, settings.RetryTime, cancellationToken);
+            var redlock = await RedLockFactory.CreateLockAsync(resource, settings.ExpiryTime, settings.WaitTime, settings.RetryTime, cancellationToken);            
+
             return redlock;
         }
 
